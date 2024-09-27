@@ -13,11 +13,11 @@ require('dotenv').config();
 
 // Initialize Express app
 const app = express();
-const port = 3000;
+const port = 3000 || process.env.Port;
 
 // Define CORS options
 const corsOptions = {
-    origin: 'http://localhost:3000',
+    origin: '*',
     credentials: true
 };
 console.log("JWT Secret: ", process.env.JWT_SECRET);
