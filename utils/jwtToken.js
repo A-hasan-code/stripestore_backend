@@ -1,17 +1,19 @@
 const jwt = require('jsonwebtoken');
 
-const sendToken = (User, statusCode, res) => {
-    const token = User.getJwTToken()
+const sendToken = (user, statusCode, res) => {
+    const token = user.getJwtToken(); // Assumes user object has a method to get JWT
     const options = {
-        expires: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
+        expires: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000), // 90 days
         httpOnly: true,
-        sameSite: "none",
-        secure: true,
+        sameSite: "none", // Adjust for your needs
+        secure: process.env.NODE_ENV === 'production' // Use secure cookies in production
     };
+
     res.cookie("token", token, options).json({
         success: true,
-        User,
+        user,
         token,
-    })
-}
-module.exports = sendToken
+    });
+};
+
+module.exports = sendToken;

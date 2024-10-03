@@ -19,9 +19,7 @@ router.post("/create-checkout-session", async (req, res) => {
         if (existingCustomers.data.length > 0) {
             customer = existingCustomers.data[0]; // Use the first found customer
         } else {
-            customer = await stripe.customers.create({
-                email,
-            });
+            customer = await stripe.customers.create({ email });
         }
     } catch (error) {
         console.error("Error retrieving/creating customer:", error);
@@ -29,17 +27,34 @@ router.post("/create-checkout-session", async (req, res) => {
     }
 
     // Prepare line items for Stripe
-    const lineItems = products.map(product => ({
-        price_data: {
-            currency: "usd",
-            product_data: {
-                name: product.dish,
-                images: [product.imgdata],
+    const lineItems = products.map(product => {
+        // Assuming product structure based on your front-end
+        const priceData = product.prices[0];
+
+        // Validate product structure
+        if (!priceData || !priceData.unit_amount || !product.qnty) {
+            throw new Error(`Invalid product data: ${JSON.stringify(product)}`);
+        }
+
+        const priceInCents = priceData.unit_amount; // Already in cents
+
+        // Validate quantity
+        if (!Number.isInteger(product.qnty) || product.qnty <= 0) {
+            throw new Error(`Invalid quantity for product: ${product.name}`);
+        }
+
+        return {
+            price_data: {
+                currency: "usd",
+                product_data: {
+                    name: product.name || "Unnamed Product",
+                    images: product.images || [],
+                },
+                unit_amount: priceInCents,
             },
-            unit_amount: product.price * 100,
-        },
-        quantity: product.qnty,
-    }));
+            quantity: product.qnty,
+        };
+    });
 
     try {
         // Create a new checkout session
@@ -51,23 +66,6 @@ router.post("/create-checkout-session", async (req, res) => {
             success_url: `http://localhost:5173/success`,
             cancel_url: `http://localhost:5173/cancel`,
         };
-
-        if (recurring) {
-            // If recurring, set up subscription-specific parameters
-            sessionParams.subscription_data = {
-                items: lineItems.map(item => ({
-                    price_data: {
-                        currency: "usd",
-                        product_data: {
-                            name: item.price_data.product_data.name,
-                            images: item.price_data.product_data.images,
-                        },
-                        unit_amount: item.price_data.unit_amount,
-                    },
-                    quantity: item.quantity,
-                })),
-            };
-        }
 
         const session = await stripe.checkout.sessions.create(sessionParams);
 

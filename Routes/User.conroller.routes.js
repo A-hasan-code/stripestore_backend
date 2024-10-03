@@ -1,8 +1,8 @@
 const express = require('express');
 const path = require('path');
 const multer = require('multer');
-const fs = require('fs');
-const db = require('../config/db');
+const fs = require('fs').promises; // Use the promise version of fs
+const db = require('../config/db'); // Assuming db is a MySQL or similar SQL database connection
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const catchAsyncError = require('../middleware/catchAsyncError');
@@ -31,6 +31,16 @@ const generateToken = (id) => {
     return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '1h' });
 };
 
+// Utility function to query the database
+const queryDatabase = (query, params) => {
+    return new Promise((resolve, reject) => {
+        db.query(query, params, (err, results) => {
+            if (err) return reject(err);
+            resolve(results);
+        });
+    });
+};
+
 // Register user
 router.post("/register", upload.single("avatar"), catchAsyncError(async (req, res, next) => {
     const { name, email, password, phoneNumber, address } = req.body;
@@ -39,32 +49,19 @@ router.post("/register", upload.single("avatar"), catchAsyncError(async (req, re
         return res.status(400).json({ message: "No file uploaded" });
     }
 
-    const existingUser = await new Promise((resolve, reject) => {
-        db.query('SELECT * FROM users WHERE email = ?', [email], (err, results) => {
-            if (err) return reject(err);
-            resolve(results[0]);
-        });
-    });
+    const existingUser = await queryDatabase('SELECT * FROM users WHERE email = ?', [email]);
 
-    if (existingUser) {
-        const filename = req.file.filename;
-        const filePath = path.join(__dirname, `../uploads/${filename}`);
-        fs.unlink(filePath, (err) => {
-            if (err) console.log(err);
-        });
+    if (existingUser.length > 0) {
+        const filePath = path.join(__dirname, `../uploads/${req.file.filename}`);
+        await fs.unlink(filePath).catch(err => console.log(err));
         return next(new ErrorHandler("User already exists", 400));
     }
 
     const avatar = req.file.filename;
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    await new Promise((resolve, reject) => {
-        db.query('INSERT INTO users (name, email, password, phoneNumber, address, avatar) VALUES (?, ?, ?, ?, ?, ?)',
-            [name, email, hashedPassword, phoneNumber, address, avatar], (err) => {
-                if (err) return reject(err);
-                resolve();
-            });
-    });
+    await queryDatabase('INSERT INTO users (name, email, password, phoneNumber, address, avatar) VALUES (?, ?, ?, ?, ?, ?)',
+        [name, email, hashedPassword, phoneNumber, address, avatar]);
 
     res.status(201).json({
         success: true,
@@ -80,20 +77,14 @@ router.post("/login", catchAsyncError(async (req, res, next) => {
         return next(new ErrorHandler("Please provide all fields!", 400));
     }
 
-    const user = await new Promise((resolve, reject) => {
-        db.query('SELECT * FROM users WHERE email = ?', [email], (err, results) => {
-            if (err) return reject(err);
-            resolve(results[0]);
-        });
-    });
+    const user = await queryDatabase('SELECT * FROM users WHERE email = ?', [email]);
 
-    if (!user || !(await bcrypt.compare(password, user.password))) {
+    if (!user.length || !(await bcrypt.compare(password, user[0].password))) {
         return next(new ErrorHandler("Invalid credentials", 400));
     }
 
-    const token = generateToken(user.id);
+    const token = generateToken(user[0].id);
 
-    // Set token in cookies
     res.cookie('token', token, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
@@ -103,33 +94,28 @@ router.post("/login", catchAsyncError(async (req, res, next) => {
     res.status(200).json({
         success: true,
         message: "Login successful!",
-        user: { id: user.id, name: user.name, email: user.email },
+        user: { id: user[0].id, name: user[0].name, email: user[0].email },
         token
     });
 }));
 
 // Load user
 router.get("/getuser", isAuthenticated, catchAsyncError(async (req, res, next) => {
-    const user = await new Promise((resolve, reject) => {
-        db.query('SELECT * FROM users WHERE id = ?', [req.user.id], (err, results) => {
-            if (err) return reject(err);
-            resolve(results[0]);
-        });
-    });
+    const user = await queryDatabase('SELECT * FROM users WHERE id = ?', [req.user.id]);
 
-    if (!user) {
-        return next(new ErrorHandler("User doesn't exist", 400));
+    if (!user.length) {
+        return next(new ErrorHandler("User doesn't exist", 404));
     }
 
     res.status(200).json({
         success: true,
-        user
+        user: user[0]
     });
 }));
 
 // Logout user
 router.get('/logout', (req, res) => {
-    res.clearCookie('token'); // Clear the cookie
+    res.clearCookie('token');
     res.status(200).json({
         success: true,
         message: 'Logout successful!',
@@ -140,24 +126,14 @@ router.get('/logout', (req, res) => {
 router.put("/update-user-info", isAuthenticated, catchAsyncError(async (req, res, next) => {
     const { email, password, phoneNumber, name } = req.body;
 
-    const user = await new Promise((resolve, reject) => {
-        db.query('SELECT * FROM users WHERE id = ?', [req.user.id], (err, results) => {
-            if (err) return reject(err);
-            resolve(results[0]);
-        });
-    });
+    const user = await queryDatabase('SELECT * FROM users WHERE id = ?', [req.user.id]);
 
-    if (!user || !(await bcrypt.compare(password, user.password))) {
+    if (!user.length || !(await bcrypt.compare(password, user[0].password))) {
         return next(new ErrorHandler("Invalid credentials", 400));
     }
 
-    await new Promise((resolve, reject) => {
-        db.query('UPDATE users SET name = ?, phoneNumber = ? WHERE id = ?',
-            [name, phoneNumber, user.id], (err) => {
-                if (err) return reject(err);
-                resolve();
-            });
-    });
+    await queryDatabase('UPDATE users SET name = ?, phoneNumber = ? WHERE id = ?',
+        [name, phoneNumber, user[0].id]);
 
     res.status(200).json({
         success: true,
@@ -167,14 +143,9 @@ router.put("/update-user-info", isAuthenticated, catchAsyncError(async (req, res
 
 // Update user password
 router.put("/update-password", isAuthenticated, catchAsyncError(async (req, res, next) => {
-    const user = await new Promise((resolve, reject) => {
-        db.query('SELECT * FROM users WHERE id = ?', [req.user.id], (err, results) => {
-            if (err) return reject(err);
-            resolve(results[0]);
-        });
-    });
+    const user = await queryDatabase('SELECT * FROM users WHERE id = ?', [req.user.id]);
 
-    if (!user || !(await bcrypt.compare(req.body.oldPassword, user.password))) {
+    if (!user.length || !(await bcrypt.compare(req.body.oldPassword, user[0].password))) {
         return next(new ErrorHandler("Old password is incorrect!", 400));
     }
 
@@ -184,13 +155,8 @@ router.put("/update-password", isAuthenticated, catchAsyncError(async (req, res,
 
     const hashedPassword = await bcrypt.hash(req.body.newPassword, 10);
 
-    await new Promise((resolve, reject) => {
-        db.query('UPDATE users SET password = ? WHERE id = ?',
-            [hashedPassword, user.id], (err) => {
-                if (err) return reject(err);
-                resolve();
-            });
-    });
+    await queryDatabase('UPDATE users SET password = ? WHERE id = ?',
+        [hashedPassword, user[0].id]);
 
     res.status(200).json({
         success: true,
@@ -200,31 +166,21 @@ router.put("/update-password", isAuthenticated, catchAsyncError(async (req, res,
 
 // Find user information by ID
 router.get("/user/:id", catchAsyncError(async (req, res, next) => {
-    const user = await new Promise((resolve, reject) => {
-        db.query('SELECT * FROM users WHERE id = ?', [req.params.id], (err, results) => {
-            if (err) return reject(err);
-            resolve(results[0]);
-        });
-    });
+    const user = await queryDatabase('SELECT * FROM users WHERE id = ?', [req.params.id]);
 
-    if (!user) {
+    if (!user.length) {
         return next(new ErrorHandler("User not found", 400));
     }
 
     res.status(200).json({
         success: true,
-        user
+        user: user[0]
     });
 }));
 
 // Admin: Get all users
 router.get("/admin-all-user", isAuthenticated, isAdmin("Admin"), catchAsyncError(async (req, res, next) => {
-    const users = await new Promise((resolve, reject) => {
-        db.query('SELECT * FROM users ORDER BY createdAt DESC', (err, results) => {
-            if (err) return reject(err);
-            resolve(results);
-        });
-    });
+    const users = await queryDatabase('SELECT * FROM users ORDER BY createdAt DESC');
 
     res.status(200).json({
         success: true,
